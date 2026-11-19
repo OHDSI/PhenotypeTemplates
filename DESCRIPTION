@@ -1,0 +1,44 @@
+Package: PhenotypeTemplates
+Type: Package
+Title: Generate Phenotype Cohort Definitions from Clinical Context
+Version: 0.1.0
+Date: 2026-11-19
+Authors@R: c(
+    person("Jamie", "Gilbert", email = "gilbert@ohdsi.org", role = c("aut", "cre")),
+    person("Observational Health Data Science and Informatics", role = c("cph"))
+    )
+Maintainer: Jamie Gilbert <gilbert@ohdsi.org>
+Description: Generates a set of OHDSI cohort definitions for a phenotype from
+    concept sets grouped by clinical role (disease of interest, hypernyms,
+    symptoms, diagnostics, treatments, complications, alternative diagnoses
+    and etiology) and a structured clinical context (clinical course, care
+    setting and expected evidence). Variants are crossed on evidence
+    strictness, index specificity, hospitalization and exclusion of
+    alternative diagnoses, producing a cohort definition set suitable for
+    'CohortGenerator' and phenotype evaluation.
+License: Apache License 2.0
+URL: https://ohdsi.github.io/PhenotypeTemplates/, https://github.com/OHDSI/PhenotypeTemplates
+BugReports: https://github.com/OHDSI/PhenotypeTemplates/issues
+Depends:
+    R (>= 4.1.0)
+Imports:
+    Capr (>= 3.0.0),
+    CirceR,
+    DatabaseConnector (>= 6.0.0),
+    SqlRender,
+    jsonlite,
+    methods,
+    stats
+Suggests:
+    testthat (>= 3.0.0),
+    CohortGenerator,
+    Eunomia,
+    knitr,
+    rmarkdown
+Remotes:
+    ohdsi/Capr
+VignetteBuilder: knitr
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Config/roxygen2/version: 8.0.0
+Config/testthat/edition: 3

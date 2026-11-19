@@ -1,0 +1,194 @@
+---
+title: "From Clinical Context to Phenotype"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{From Clinical Context to Phenotype}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = requireNamespace("Capr", quietly = TRUE)
+)
+```
+
+`PhenotypeTemplates` turns two inputs into a set of candidate cohort
+definitions for a phenotype:
+
+1. **Concept sets**, grouped by the role they play in the clinical picture
+   (disease of interest, symptoms, treatments, ...).
+2. A **clinical context**: a small set of structured decisions about the
+   condition (is it persistent or transient, where is it diagnosed, which
+   supporting evidence is expected).
+
+The clinical context can be written by hand, as below, or produced by another
+tool such as [Pegasus](https://github.com/OHDSI/Pegasus). Either way it
+follows one contract, described by `clinicalContextSpecification()` and
+published as a JSON Schema.
+
+```{r setup}
+library(Capr)
+library(PhenotypeTemplates)
+```
+
+## The clinical context contract
+
+```{r spec}
+spec <- clinicalContextSpecification()
+spec[, c("field", "type", "required", "allowedValues")]
+```
+
+The JSON Schema form is shipped with the package:
+
+```{r schema, eval = FALSE}
+system.file("schema", "clinical-context.schema.json", package = "PhenotypeTemplates")
+```
+
+Field names are matched ignoring case and underscores, so a context produced
+with camelCase columns (for example `clinicalCourse`) works unchanged.
+
+### Deciding each field
+
+| Field | Decision it captures |
+| --- | --- |
+| `clinical_course` | Is the condition persistent or transient? Does it recur? Sets the default cohort exit. |
+| `expected_care_setting` | Is it normally diagnosed in the ER/inpatient setting, or outpatient? Controls which hospitalization variants are built. |
+| `sex_constraint`, `min_age_years`, `max_age_years` | Any demographic restriction implied by the definition. |
+| `minimum_interepisode_gap_days` | For recurring conditions: how many days separate two episodes. |
+| `recommended_cohort_exit`, `recommended_exit_days` | When an episode ends, if different from the clinical course default. |
+| `has_discrete_recorded_symptoms` | Are specific, codeable symptoms recorded before diagnosis? |
+| `requires_diagnostic_test_or_procedure` | Is a specific test or procedure part of how the diagnosis is confirmed? |
+| `requires_active_treatment_within_30d` | Is a characteristic treatment started soon after diagnosis? |
+| `expects_condition_specific_followup_or_sequelae_1yr` | Are complications or condition-specific follow-up expected within a year? |
+
+**Clinical course** sets the default exit:
+
+- `PERSISTENT_STABLE`: diagnosed once and does not resolve. Exit at end of
+  continuous observation.
+- `PERSISTENT_RELAPSING`: ongoing with flares. Exit at the end of an era with
+  a persistence gap (`minimum_interepisode_gap_days` required).
+- `TRANSIENT_RECURRENT`: resolves but can recur. Era with a persistence gap.
+- `TRANSIENT_SINGLE`: one self-contained episode. Fixed window from index
+  (`recommended_exit_days` required).
+
+**Expected care setting** controls the hospitalization variants:
+
+- `ACUTE_CARE_EXPECTED`: only a variant requiring an ER/inpatient visit.
+- `ACUTE_CARE_COMMON`: variants with and without that requirement.
+- `OUTPATIENT_EXPECTED`: only a variant without it.
+
+## Example contexts
+
+The package ships a few hand-written example contexts:
+
+```{r examples}
+contexts <- read.csv(
+  system.file("examples", "clinical_contexts.csv", package = "PhenotypeTemplates"),
+  stringsAsFactors = FALSE
+)
+contexts[, c("condition_name", "clinical_course", "expected_care_setting", "recommended_cohort_exit")]
+```
+
+## Validate
+
+`validateClinicalContext()` checks required fields, enum values, booleans,
+numbers and cross-field rules. With `throw = FALSE` it returns the problems
+as a data frame, which is convenient when checking generated contexts:
+
+```{r validate}
+validateClinicalContext(contexts, throw = FALSE)
+
+broken <- contexts[3, ]
+broken$clinical_course <- "SOMETIMES"
+broken$recommended_exit_days <- NA
+validateClinicalContext(broken, throw = FALSE)
+```
+
+## Convert to a template configuration
+
+```{r config}
+gibContext <- contexts[contexts$condition_name == "Gastrointestinal hemorrhage", ]
+config <- phenotypeConfigFromContext(gibContext)
+str(config[c("clinicalCourse", "expectedCareSetting", "recommendedCohortExit", "fixedExitDays")])
+```
+
+## Build the concept sets
+
+Each concept set fills one bucket. Bucket codes and the category names used
+by concept set generators are both accepted:
+
+```{r categories}
+conceptCategoryMap()
+```
+
+The concept IDs below are illustrative seeds, not a validated phenotype:
+
+```{r concept-sets}
+conceptSets <- list(
+  "Disease of interest"   = cs(descendants(192671L), name = "GI hemorrhage"),
+  "Clinical presentation" = cs(descendants(200219L), name = "Abdominal pain"),
+  "Diagnostic procedure"  = cs(descendants(4028949L), name = "Endoscopy"),
+  "Drug"                  = cs(descendants(923645L), name = "Pantoprazole"),
+  "Alternative diagnosis" = cs(descendants(4027663L), name = "Peptic ulcer")
+)
+```
+
+When several concept sets map to the same bucket, combine them first with
+`unionConceptsets()`, which needs a database with OMOP vocabulary tables.
+
+## Build the cohorts
+
+`config` can be the result of `phenotypeConfigFromContext()` or the
+single-row context itself:
+
+```{r build}
+cohorts <- buildPhenotypeTemplates(
+  conceptSets = conceptSets,
+  phenotypeLabel = "Gastrointestinal hemorrhage",
+  config = gibContext
+)
+
+cohorts[, c("cohortId", "cohortName", "evidenceLevel", "hospitalEntry", "altDxExcluded")]
+```
+
+`cohortName` is for display. Use the axis columns (`evidenceLevel`,
+`evidenceComponents`, `hypernymIndex`, `hospitalEntry`, `altDxExcluded`) to
+identify variants programmatically. `cohortDescription` explains each
+variant in full.
+
+## Generate the cohorts
+
+`cohorts` is a `CohortGenerator` cohort definition set, so it can be
+generated on any OMOP CDM supported by `DatabaseConnector`:
+
+```{r generate, eval = FALSE}
+library(CohortGenerator)
+
+connectionDetails <- DatabaseConnector::createConnectionDetails(
+  dbms = "postgresql",
+  server = "localhost/ohdsi",
+  user = "user",
+  password = Sys.getenv("CDM_PASSWORD")
+)
+cohortTableNames <- getCohortTableNames(cohortTable = "phenotype_templates")
+
+createCohortTables(
+  connectionDetails = connectionDetails,
+  cohortDatabaseSchema = "results",
+  cohortTableNames = cohortTableNames
+)
+runCohortGeneration(
+  connectionDetails = connectionDetails,
+  cdmDatabaseSchema = "cdm",
+  cohortDatabaseSchema = "results",
+  cohortTableNames = cohortTableNames,
+  cohortDefinitionSet = cohorts,
+  outputFolder = "phenotype_templates_output"
+)
+```
+
+When building several phenotypes, pass an increasing `startCohortId` to
+each call so `cohortId` stays unique, then `rbind()` the results.

@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohdsi.github.io/PhenotypeTemplates/schema/clinical-context.schema.json",
+  "title": "PhenotypeTemplates clinical context",
+  "description": "Structured clinical knowledge about one phenotype, used by PhenotypeTemplates to generate cohort definitions. Cross-field rules (exit parameters, age range) are enforced by PhenotypeTemplates::validateClinicalContext().",
+  "type": "object",
+  "required": [
+    "clinical_course",
+    "expected_care_setting",
+    "has_discrete_recorded_symptoms",
+    "requires_diagnostic_test_or_procedure",
+    "requires_active_treatment_within_30d",
+    "expects_condition_specific_followup_or_sequelae_1yr"
+  ],
+  "properties": {
+    "source_phenotype": {
+      "type": ["string", "null"],
+      "description": "Name of the phenotype this context was written for (join key to concept sets)."
+    },
+    "source_definition": {
+      "type": ["string", "null"],
+      "description": "Free-text clinical description the context was derived from."
+    },
+    "condition_name": {
+      "type": ["string", "null"],
+      "description": "Display name of the condition; may carry a disambiguating suffix."
+    },
+    "clinical_rationale": {
+      "type": ["string", "null"],
+      "description": "Free-text justification for the structured choices below."
+    },
+    "is_pharmacovigilance_outcome": {
+      "type": ["string", "null"],
+      "enum": [
+        "YES",
+        "NO",
+        "CONDITIONAL",
+        null
+      ],
+      "description": "Whether the condition is typically a pharmacovigilance outcome. Descriptive only."
+    },
+    "clinical_course": {
+      "type": "string",
+      "enum": [
+        "PERSISTENT_STABLE",
+        "PERSISTENT_RELAPSING",
+        "TRANSIENT_RECURRENT",
+        "TRANSIENT_SINGLE"
+      ],
+      "description": "Natural history of the condition. Sets the default cohort era and exit logic."
+    },
+    "expected_care_setting": {
+      "type": "string",
+      "enum": [
+        "ACUTE_CARE_EXPECTED",
+        "ACUTE_CARE_COMMON",
+        "OUTPATIENT_EXPECTED"
+      ],
+      "description": "Where the condition is usually diagnosed. Controls the hospitalization variants generated."
+    },
+    "sex_constraint": {
+      "type": ["string", "null"],
+      "enum": [
+        "BOTH_SEXES",
+        "FEMALE_ONLY",
+        "MALE_ONLY",
+        null
+      ],
+      "description": "Restricts the cohort to one sex. Defaults to BOTH_SEXES."
+    },
+    "min_age_years": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Minimum age in years at index, if the condition is age restricted."
+    },
+    "max_age_years": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Maximum age in years at index, if the condition is age restricted."
+    },
+    "minimum_interepisode_gap_days": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Gap in days separating distinct episodes. Required when the exit resolves to an era with persistence gap."
+    },
+    "recommended_cohort_exit": {
+      "type": ["string", "null"],
+      "enum": [
+        "END_OF_CONTINUOUS_OBSERVATION",
+        "END_OF_ERA_WITH_PERSISTENCE_GAP",
+        "FIXED_WINDOW_FROM_INDEX",
+        null
+      ],
+      "description": "Overrides the cohort exit implied by clinical_course."
+    },
+    "recommended_exit_days": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Days from index to cohort exit. Required when the exit resolves to a fixed window."
+    },
+    "has_discrete_recorded_symptoms": {
+      "type": "boolean",
+      "description": "Symptoms are discretely recorded in the 30 days before diagnosis."
+    },
+    "requires_diagnostic_test_or_procedure": {
+      "type": "boolean",
+      "description": "A diagnostic test or procedure is expected in the 30 days before diagnosis."
+    },
+    "requires_active_treatment_within_30d": {
+      "type": "boolean",
+      "description": "Condition-specific treatment is expected within 30 days after diagnosis."
+    },
+    "expects_condition_specific_followup_or_sequelae_1yr": {
+      "type": "boolean",
+      "description": "Condition-specific follow-up care or sequelae are expected within 1 year."
+    },
+    "confidence": {
+      "type": ["string", "null"],
+      "enum": [
+        "HIGH",
+        "MODERATE",
+        "LOW",
+        null
+      ],
+      "description": "Confidence of the author in this context. Descriptive only."
+    }
+  },
+  "additionalProperties": true
+}

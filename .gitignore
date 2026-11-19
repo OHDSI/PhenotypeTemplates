@@ -1,0 +1,13 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.DS_Store
+docs/
+inst/doc
+vignettes/*.html
+vignettes/*_files/
+*.tar.gz
+*.Rcheck/
+.cached_union_concept*/
+tests/testthat/_problems/
