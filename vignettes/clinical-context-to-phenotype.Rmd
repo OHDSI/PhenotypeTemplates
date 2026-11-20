@@ -117,8 +117,20 @@ str(config[c("clinicalCourse", "expectedCareSetting", "recommendedCohortExit", "
 
 ## Build the concept sets
 
-Each concept set fills one bucket. Bucket codes and the category names used
-by concept set generators are both accepted:
+Each concept set fills one bucket, which decides its role in the templates:
+
+| Bucket | Category | Role in the templates |
+| --- | --- | --- |
+| `I` | Disease of interest | Index event (required) |
+| `H` | Hypernym | Optional broader index event; follow-up care evidence |
+| `S` | Clinical presentation | Evidence in the 30 days before index |
+| `D` | Diagnostic procedure, Measurement | Evidence in the 30 days before index |
+| `T` | Drug, Treatment procedure | Evidence in the 30 days after index |
+| `C` | Progression complication | Follow-up care evidence, 1 to 365 days after index |
+| `E` | Etiology | Follow-up care evidence, 30 days either side of index |
+| `A` | Alternative diagnosis | Optional exclusion, 30 days either side of index |
+
+Name the list entries by bucket code or by category; both are accepted:
 
 ```{r categories}
 conceptCategoryMap()
@@ -154,7 +166,15 @@ cohorts <- buildPhenotypeTemplates(
 cohorts[, c("cohortId", "cohortName", "evidenceLevel", "hospitalEntry", "altDxExcluded")]
 ```
 
-`cohortName` is for display. Use the axis columns (`evidenceLevel`,
+The variants differ in evidence strictness (`L0` index only, `L1` treatment
+or follow-up, `L2` adds symptoms or diagnostics), whether the hypernym can be
+the index event, whether the index must occur in an ER/inpatient visit, and
+whether alternative diagnoses are excluded. Only the axes that the context and
+the supplied concept sets allow are built.
+
+Cohort names are short labels such as
+`[PheTpl] Gastrointestinal hemorrhage - Evid Sx|Test, Hospital`. They are for
+display and may change between versions. Use the axis columns (`evidenceLevel`,
 `evidenceComponents`, `hypernymIndex`, `hospitalEntry`, `altDxExcluded`) to
 identify variants programmatically. `cohortDescription` explains each
 variant in full.
