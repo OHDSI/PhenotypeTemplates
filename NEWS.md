@@ -1,3 +1,18 @@
+PhenotypeTemplates 0.1.0.9000
+========================
+
+Development version.
+
+- New article `vignette("acnu-drug-exposure-cohorts")` describing how to
+  build active comparator new user (ACNU) drug exposure cohorts with the
+  templates: the drug is the bucket `I` index event, each arm is its own
+  cohort, and no outcome, indication or comorbidity evidence is encoded.
+- New `extras/AcnuDrugExposureCohorts.R` worked example that builds one
+  new-user cohort per treatment arm from a design table shared by both arms.
+- New tests locking in the ACNU invariants: a drug-only arm yields exactly one
+  L0 cohort, whose entry event is a drug exposure and whose only concept set
+  is the arm's drug set.
+
 PhenotypeTemplates 0.1.0
 ========================
 
