@@ -39,3 +39,9 @@ reference:
 - title: "Package"
   contents:
   - PhenotypeTemplates-package
+
+articles:
+- title: "Guides"
+  contents:
+  - clinical-context-to-phenotype
+  - phenelope-concept-sets-to-templates
