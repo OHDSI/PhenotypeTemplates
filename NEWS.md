@@ -1,3 +1,15 @@
+PhenotypeTemplates 0.1.0.9000
+========================
+
+Development version.
+
+- New article `vignette("phenelope-concept-sets-to-templates")` describing how
+  concept sets produced by OHDSI/Phenelope (LLM-based concept set generation)
+  are assigned to template buckets and passed to `buildPhenotypeTemplates()`.
+- New `extras/PhenelopeTemplateSets.R` worked example: runs Phenelope once per
+  clinical role, checks each concept set is non-empty and in the domain its
+  role implies, then builds the template cohort set.
+
 PhenotypeTemplates 0.1.0
 ========================
 

@@ -1,0 +1,193 @@
+---
+title: "From Phenelope Concept Sets to Template Sets"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{From Phenelope Concept Sets to Template Sets}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = requireNamespace("Capr", quietly = TRUE)
+)
+```
+
+```{r setup}
+library(PhenotypeTemplates)
+```
+
+`buildPhenotypeTemplates()` needs two inputs (see
+`vignette("clinical-context-to-phenotype")`):
+
+1. **concept sets grouped by clinical role**, and
+2. a **clinical context**.
+
+[OHDSI/Phenelope](https://github.com/OHDSI/Phenelope) produces concept sets
+using a large language model. It returns one concept set per request, as a
+CIRCE concept set expression, with no knowledge of the role that set plays in
+a phenotype. This article describes how to go from the first to the second:
+what a Phenelope concept set looks like, how to decide which bucket each one
+fills, and how to hand the result to the templates.
+
+A worked, end-to-end script (including the Phenelope call and the
+vocabulary-backed checks) is in `extras/PhenelopeTemplateSets.R`.
+
+## What Phenelope returns
+
+`Phenelope::createConceptSet()` takes a name and a clinical definition, does
+the concept selection with the LLM, and returns the concept set as a JSON
+expression of the same shape you would import into Atlas. The request itself
+is short -- the clinical definition is the part that steers the LLM, so write
+it as a phenotype author would:
+
+```{r phenelope-shape, eval = FALSE}
+conceptSetJson <- Phenelope::createConceptSet(
+  name = "Gastrointestinal hemorrhage",
+  clinicalDefinition = "Acute bleeding from the gastrointestinal tract ...",
+  llmClient = llmClient,
+  connectionDetails = connectionDetails,
+  vocabDatabaseSchema = "cdm"
+)
+```
+
+The expression has a single `items` array. Each item is a concept, its
+include/exclude flag, and whether descendants are included:
+
+```{r expression-shape}
+expression <- list(items = list(
+  list(
+    concept = list(CONCEPT_ID = 192671L, CONCEPT_NAME = "Gastrointestinal hemorrhage",
+                   DOMAIN_ID = "Condition"),
+    isExcluded = FALSE, includeDescendants = TRUE, includeMapped = FALSE
+  )
+))
+names(expression$items[[1]])
+```
+
+Phenelope decides the domain itself (`getDomain()`) and picks concepts from
+the vocabularies that belong to it. That matters below: the domain Phenelope
+resolved is a good first check that a set can play the role you have in mind.
+
+## Deciding the role of each concept set
+
+The templates index on one disease of interest and use the other concept
+sets as supporting evidence. Each role maps to one bucket:
+
+```{r buckets}
+conceptCategoryMap()
+```
+
+Phenelope does not know which of these roles it is filling, so the decision is
+yours (or the phenotype author's). The practical rule is to write one
+Phenelope request per role, starting from the clinical context: a condition
+that `has_discrete_recorded_symptoms` needs a `Clinical presentation` request,
+one that `requires_diagnostic_test_or_procedure` needs a
+`Diagnostic procedure` or `Measurement` request, and so on. The context fields
+and the buckets line up one-to-one:
+
+| Clinical context says | Ask Phenelope for | Bucket |
+| --- | --- | --- |
+| (always) the condition itself | the disease of interest | `I` |
+| (optionally) a broader category | the hypernym | `H` |
+| `has_discrete_recorded_symptoms` | symptoms and signs | `S` |
+| `requires_diagnostic_test_or_procedure` | the confirming test or procedure | `D` |
+| `requires_active_treatment_within_30d` | the characteristic treatment | `T` |
+| `expects_condition_specific_followup_or_sequelae_1yr` | complications and follow-up | `C` |
+| eliminated alternative causes | alternative diagnoses | `A` |
+| suspected cause | etiology | `E` |
+
+Buckets you do not supply do not produce their variants. Only `I` is
+required.
+
+## Checking the sets before building templates
+
+A concept set that is empty, or that resolved to the wrong domain, produces
+templates that run but do not mean what the clinical context intends. Both
+problems are cheap to catch first, using the same vocabulary Phenelope
+worked against:
+
+```{r preflight, eval = FALSE}
+items <- jsonlite::fromJSON(conceptSetJson, simplifyVector = FALSE)$items
+ids <- vapply(items, function(x) as.integer(x$concept$CONCEPT_ID), integer(1))
+
+DatabaseConnector::renderTranslateQuerySql(
+  connection,
+  "SELECT DISTINCT domain_id FROM @vocab.concept WHERE concept_id IN (@ids);",
+  vocab = "cdm", ids = paste(ids, collapse = ", ")
+)
+```
+
+A `Drug` role that comes back with `Observation` concepts, or a set with zero
+concept IDs, should be re-run or adjudicated in Atlas before templating.
+`extras/PhenelopeTemplateSets.R` performs this check for every role and stops
+before template generation if any set fails.
+
+## Building the templates
+
+`buildPhenotypeTemplates()` takes a named list of Capr `ConceptSet` objects,
+named by bucket code or by category, together with the clinical context:
+
+```{r build, eval = FALSE}
+conceptSets <- list(
+  "Disease of interest"   = csIHemorrhage,
+  "Clinical presentation" = csSPresentation,
+  "Diagnostic procedure"  = csDEndoscopy,
+  "Drug"                  = csTPpi,
+  "Alternative diagnosis" = csAUlcer
+)
+
+cohorts <- buildPhenotypeTemplates(
+  conceptSets = conceptSets,
+  phenotypeLabel = "Gastrointestinal hemorrhage",
+  config = context
+)
+```
+
+When a phenotype needs several sets in the same role, combine them first.
+Several categories can resolve to the same bucket -- `Drug` and
+`Treatment procedure` both become `T`, `Diagnostic procedure` and
+`Measurement` both become `D` -- and passing both is an error, because the
+template would otherwise silently drop one of them:
+
+```{r duplicate-bucket}
+conceptCategoryToBucket(c("Drug", "Treatment procedure", "Measurement"))
+```
+
+Supply one set per bucket. Use `unionConceptsets()` to merge the expressions
+into a single set, then rebuild one Capr concept set for that bucket.
+
+## Rebuilding a Phenelope set as a Capr concept set
+
+`buildPhenotypeTemplates()` expects Capr `ConceptSet` objects. Rebuilding one
+from the Phenelope expression, rather than re-asking for concepts, keeps the
+templated expression identical to the adjudicated one:
+
+```{r capr-rebuild, eval = FALSE}
+asCaprConceptSet <- function(expression, name) {
+  items <- expression$items
+  keep <- items[!vapply(items, function(x) isTRUE(x$isExcluded), logical(1))]
+  ids <- vapply(keep, function(x) as.integer(x$concept$CONCEPT_ID), integer(1))
+  conceptSet <- Capr::cs(Capr::descendants(ids), name = name)
+  Capr::getConceptSetDetails(conceptSet, connection,
+                             vocabularyDatabaseSchema = "cdm")
+}
+```
+
+Two details are worth knowing:
+
+* `Capr::getConceptSetDetails()` resolves each concept against the vocabulary,
+  so an ID that Phenelope returned but the local vocabulary does not contain
+  fails here rather than producing a cohort that silently matches nothing.
+* If a set mixes `includeDescendants = TRUE` and `FALSE`, it cannot be rebuilt
+  as a single `Capr::cs(descendants(ids))` call. Flatten it with
+  `unionConceptsets()` first.
+
+## Provenance
+
+Record the clinical context alongside the generated cohort set, together with
+the Phenelope requests and expressions, so that a template can be regenerated
+and audited later. The context is the only input that is not derivable from
+the concept sets, so it is the part most worth keeping.
