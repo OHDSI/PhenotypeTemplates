@@ -1,0 +1,180 @@
+---
+title: "Active Comparator New User Drug Exposure Cohorts"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Active Comparator New User Drug Exposure Cohorts}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = requireNamespace("Capr", quietly = TRUE)
+)
+```
+
+```{r setup}
+library(PhenotypeTemplates)
+```
+
+The templates in this package are built around a **disease of interest**: the
+index event is a diagnosis (or the record of a condition in the observation
+domain), and the other concept sets are clinical evidence that surrounds it.
+An **active comparator new user (ACNU)** design inverts that: the index event
+is a **drug exposure**, and the "disease of interest" role is played by the
+treatment arm.
+
+This article describes how to build ACNU drug exposure cohorts with these
+templates, which parts of the design the templates express for you, and which
+parts are study-design decisions you have to make before you generate any
+cohort. It applies to drug-vs-drug comparisons that are **independent of any
+outcome phenotype**: nothing here requires, or encodes, an outcome.
+
+## What an ACNU design needs
+
+An ACNU study has three elements, and only the first is a cohort definition:
+
+1. **A new-user cohort per treatment arm.** A person enters the arm on the
+   first date on which they started *that* drug after a clean period with no
+   exposure to *that* drug.
+2. **A new-user cohort of the comparator.** The same, for the alternative
+   treatment.
+3. **The outcome.** A separate cohort definition, applied to both arms.
+
+The new-user restriction is per arm, not per study. A person who is a new
+user of both arms can be a new user of either; which arm they are attributed
+to is decided by the study design (typically the arm they actually started),
+not by the phenotype. Building both arms symmetrically is what makes them
+comparable, and it is why the outcome must stay out of both definitions.
+
+## Mapping the design onto the buckets
+
+The bucket that does the work is `I`: it is the index event. Every ACNU arm
+is described as:
+
+| Template input | ACNU meaning |
+| --- | --- |
+| `I` | **the drug exposure of that arm** (the new-user entry event) |
+| `S`, `D`, `C`, `E` | not used: they would encode indication or morbidities, which differ between arms by construction |
+| `T` | not used: it would be the comparator, i.e. study design, not phenotype |
+| `A` | not used as an exclusion of the drug; alternatives are arm questions, not phenotype questions |
+
+The consequence is deliberate: **an ACNU arm cohort uses only the `I` bucket,
+and therefore only the `L0` evidence level is generated**. Supplying `S`,
+`D`, `T`, `C`, `E` or `A` for an ACNU arm does not make the phenotype better;
+it reintroduces the confounding the active comparator is there to remove, and
+it can never be symmetric between arms.
+
+```{r ladder-consequence}
+config <- phenotypeConfig(
+  clinicalCourse = "persistent_stable",
+  expectedCareSetting = "outpatient_expected"
+)
+config$hasDescreteRecordedSymptoms <- FALSE
+config$requiresActiveTreatmentWithin30d <- FALSE
+config$expectsConditionSpecificFollowupOrSequelae1yr <- FALSE
+config$requiresDiagnosticTestOrProcedure <- FALSE
+c(
+  symptoms = config$hasDescreteRecordedSymptoms,
+  diagnostics = config$requiresDiagnosticTestOrProcedure,
+  treatment = config$requiresActiveTreatmentWithin30d,
+  followup = config$expectsConditionSpecificFollowupOrSequelae1yr
+)
+```
+
+## Building one arm
+
+Each arm is one call. The two arms of a comparison are separate calls, with
+the same `config` and different `I`:
+
+```{r arms, eval = FALSE}
+# Arm 1: new users of the DOAC arm
+doacArm <- buildPhenotypeTemplates(
+  conceptSets = list(I = csDoac),
+  phenotypeLabel = "Apixaban or rivaroxaban new users",
+  config = acnuConfig
+)
+
+# Arm 2: new users of warfarin
+warfarinArm <- buildPhenotypeTemplates(
+  conceptSets = list(I = csWarfarin),
+  phenotypeLabel = "Warfarin new users",
+  config = acnuConfig,
+  startCohortId = max(doacArm$cohortId)
+)
+```
+
+Use `startCohortId` so the two arms get disjoint cohort IDs; the two sets can
+then be `rbind()`ed into a single cohort definition set for
+`CohortGenerator`.
+
+## Choosing the clinical course for an arm
+
+The clinical course controls the index event limit and the cohort exit, and
+for an ACNU arm both should follow the **treatment**, not the disease:
+
+* `persistent_stable` produces a first-occurrence index (`expressionLimit =
+  "First"`) and exits at the end of continuous observation. This is the
+  conventional choice for a "first new use of the drug, followed forward"
+  arm.
+* `transient_recurrent` produces `expressionLimit = "All"`, i.e. one
+  qualifying event per exposure episode. That is a new-episode design, not a
+  new-user design, and the two arms are no longer risk-set comparable unless
+  every episode in both arms is handled the same way.
+
+For a new-user design, prefer `persistent_stable` with an explicit age
+restriction, and keep the same `config` for both arms.
+
+## The clean window is a design decision
+
+The templates make the first-occurrence restriction and the observation
+window configurable, but they do not decide how long the clean period before
+the index should be. That is the single most consequential decision in an
+ACNU study, because a clean period that is longer in one arm than the other
+changes who can enter each arm.
+
+Record the clean window you used next to the cohorts you generated, and apply
+the same one to both arms. If an arm needs a different clean window (for
+example because the drug is only recently available), say so explicitly
+rather than letting it differ silently:
+
+```{r clean-window}
+acnuDesign <- data.frame(
+  arm = c("DOAC", "Warfarin"),
+  indexConceptSet = c("Apixaban or rivaroxaban", "Warfarin"),
+  cleanWindowDays = c(365L, 365L),
+  minAgeYears = c(18L, 18L),
+  maxAgeYears = c(NA_integer_, NA_integer_),
+  clinicalCourse = "persistent_stable",
+  stringsAsFactors = FALSE
+)
+acnuDesign
+```
+
+## Age and sex restrictions belong to the comparison
+
+An age or sex restriction on one arm only makes the arms non-exchangeable.
+Set `minAge`, `maxAge`, `male` and `female` once and reuse that `config` for
+both arms, as above, rather than configuring each arm separately.
+
+## What is intentionally not here
+
+* **No outcome logic.** The outcome cohort is applied to both arms by the
+  study design, not by these templates. A cohort definition that includes the
+  outcome is not an ACNU phenotype; it is an outcome-restricted cohort, and
+  it cannot be used as a comparator.
+* **No indication restriction.** Restricting both arms to a shared
+  indication is legitimate and often necessary, but it is a separate
+  decision. If you need it, add the indication as an additional, *identical*
+  restriction to both arms, and document it alongside `acnuDesign`. Do not
+  express it through the `A` bucket, which excludes rather than restricts.
+
+## Provenance
+
+Keep `acnuDesign` with the generated cohort definitions. Together with the
+concept sets it is everything needed to know which two populations were
+compared, how they were made new users, and how they were indexed, which is
+the part of an ACNU study that cannot be recovered from the cohort SQL
+afterwards.
