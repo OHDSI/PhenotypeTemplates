@@ -18,23 +18,24 @@ navbar:
     home:
       icon: fa-house fa-lg
       href: index.html
-    reference:
-  - title: "Clinical context"
-    desc: "Describe, validate and translate the clinical context of a phenotype."
-    contents:
-      - clinicalContextSpecification
-      - validateClinicalContext
-      - phenotypeConfigFromContext
-      - phenotypeConfig
-      - inferPhenotypeOccurrenceSettings
-  - title: "Building cohort definition sets"
-    contents:
-      - buildPhenotypeTemplates
-  - title: "Concept sets"
-    contents:
-      - conceptCategoryMap
-      - conceptCategoryToBucket
-      - unionConceptsets
-  - title: "Package"
-    contents:
-      - PhenotypeTemplates-package
+
+reference:
+- title: "Clinical context"
+  desc: "Describe, validate and translate the clinical context of a phenotype."
+  contents:
+  - clinicalContextSpecification
+  - validateClinicalContext
+  - phenotypeConfigFromContext
+  - phenotypeConfig
+  - inferPhenotypeOccurrenceSettings
+- title: "Building cohort definition sets"
+  contents:
+  - buildPhenotypeTemplates
+- title: "Concept sets"
+  contents:
+  - conceptCategoryMap
+  - conceptCategoryToBucket
+  - unionConceptsets
+- title: "Package"
+  contents:
+  - PhenotypeTemplates-package
