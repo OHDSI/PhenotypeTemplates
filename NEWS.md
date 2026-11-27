@@ -1,3 +1,24 @@
+PhenotypeTemplates 0.1.0.9000
+========================
+
+Development version.
+
+- Concept set precedence now runs on *resolved* code lists when a vocabulary
+  connection is supplied. `buildPhenotypeTemplates()` gains `connection` and
+  `vocabularyDatabaseSchema`; when set, every bucket is resolved once through
+  `CONCEPT_ANCESTOR` / 'Maps to', so an `includeDescendants` overlap between
+  buckets is detected even when the expression roots differ (e.g.
+  `I = 192671*` and `S = 434797`). Previously precedence compared expression
+  items only, so such overlaps were silently missed.
+- An item is now removed by precedence only when *every* code it contributes
+  is also provided by the higher-priority set. Partially covered items are
+  kept, so precedence no longer deletes codes the higher-priority set lacks.
+- Excluded concept set items are no longer candidates for removal: they
+  contribute no codes.
+- Without a connection, precedence still falls back to comparing expression
+  items, and `buildPhenotypeTemplates()` warns once per session to say so.
+
+
 PhenotypeTemplates 0.1.0
 ========================
 

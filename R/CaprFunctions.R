@@ -56,6 +56,7 @@
 #
 # Concept set overlap precedence (highest -> lowest), enforced by
 # resolveConceptSetOverlaps():
+#
 #   1. I  - wins over A, H, E, S, C
 #   2. A  - wins over H, E, S, C (hypernyms are broad/general and may
 #           legitimately overlap with alternative-diagnosis concepts, so A
@@ -63,6 +64,11 @@
 #   3. H  - wins over E, S, C
 #   4. E  - wins over S, C
 #   5. S and C - tied, allowed to overlap each other
+#
+# Precedence is applied to each bucket's resolved code list when a vocabulary
+# connection is supplied, so an includeDescendants overlap is detected even
+# when the two buckets name different (ancestor/descendant) concepts. Without
+# a connection only expression items are compared.
 #
 # Phenotype config (see buildPhenotypeTemplates()) replaces the old fixed
 # V0..V11 lattice with a dynamic set of variants driven by a per-phenotype
@@ -392,11 +398,41 @@ makeSymptomCriterion <- function(cs_S) {
 #   4. E - wins over S, C
 #   5. S and C - allowed to overlap (different time windows)
 
+# Once-per-session notice that precedence ran without a vocabulary.
+.unresolvedPrecedenceWarned <- new.env(parent = emptyenv())
+
+.warnUnresolvedPrecedence <- function() {
+  if (isTRUE(.unresolvedPrecedenceWarned$done)) return(invisible())
+  .unresolvedPrecedenceWarned$done <- TRUE
+  warning(
+    "Concept set precedence is being resolved from expression items only because no connection ",
+    "was supplied. Concepts reached through includeDescendants will not be detected as overlaps ",
+    "between buckets. Pass connection and vocabularyDatabaseSchema to buildPhenotypeTemplates() ",
+    "to resolve precedence against the vocabulary. This warning is shown once per session.",
+    call. = FALSE
+  )
+}
+
 #' Resolve overlapping concepts across clinical category concept sets
 #'
 #' Applies precedence rules to remove concepts from lower-priority sets when
 #' they also appear in higher-priority sets. Only affects condition/observation
 #' domain sets (I, A, H, E, S, C). D and T are passed through unchanged.
+#'
+#' Precedence is decided on *resolved* code lists, not on expression items. An
+#' expression root with `includeDescendants = TRUE` covers all of its
+#' descendants, so `I = 192671*` and `S = 434797` (a descendant of 192671)
+#' overlap completely even though their roots are different concepts.
+#'
+#' If `connection` is supplied, every bucket is resolved against the
+#' vocabulary once (see `.resolveConceptSetCodesAll()`), and an item is removed
+#' only when every code it contributes is also provided by a higher-priority
+#' set. An item that is only partly covered is kept, so precedence never
+#' deletes codes the higher-priority set does not provide.
+#'
+#' If `connection` is NULL, only identical concept IDs can be compared, which
+#' is correct only when every set is a plain list of codes without
+#' descendants. A warning is emitted in that case.
 #'
 #' @param cs_I ConceptSet for disease of interest. Required.
 #' @param cs_H ConceptSet for hypernyms, or NULL.
@@ -408,6 +444,14 @@ makeSymptomCriterion <- function(cs_S) {
 #' @param cs_E ConceptSet for etiology, or NULL.
 #' @param warnOnOverlap Logical. If TRUE (default), emit a message listing
 #'   removed concepts for traceability.
+#' @param connection An open DatabaseConnector connection to a database with
+#'   the OMOP vocabulary tables, or NULL.
+#' @param vocabularyDatabaseSchema Schema holding the vocabulary tables.
+#'   Required when `connection` is not NULL.
+#' @param warnUnresolved Logical. If TRUE (default), warn when running without
+#'   a connection, since precedence is then applied to expression items only.
+#'   [buildPhenotypeTemplates()] passes FALSE because it reports the same
+#'   limitation once per call in its own message.
 #'
 #' @return A named list with cleaned concept sets:
 #'   `cs_I`, `cs_H`, `cs_S`, `cs_D`, `cs_T`, `cs_C`, `cs_A`, `cs_E`.
@@ -421,72 +465,111 @@ resolveConceptSetOverlaps <- function(cs_I,
                                       cs_C       = NULL,
                                       cs_A       = NULL,
                                       cs_E       = NULL,
-                                      warnOnOverlap = TRUE) {
+                                      warnOnOverlap = TRUE,
+                                      connection = NULL,
+                                      vocabularyDatabaseSchema = NULL,
+                                      warnUnresolved = TRUE) {
   if (is.null(cs_I)) stop("cs_I (disease of interest) is required", call. = FALSE)
-
-  # Extract concept IDs from a ConceptSet object
-  getIds <- function(cs) {
-    if (is.null(cs)) return(integer(0))
-    vapply(cs@Expression, function(x) x@Concept@concept_id, integer(1))
+  if (!is.null(connection) && is.null(vocabularyDatabaseSchema)) {
+    stop("vocabularyDatabaseSchema is required when connection is supplied", call. = FALSE)
   }
 
-  # Remove specific concept IDs from a ConceptSet, return modified or NULL
-  removeIds <- function(cs, idsToRemove, label) {
-    if (is.null(cs) || length(idsToRemove) == 0L) return(cs)
+  conceptSets <- list(I = cs_I, H = cs_H, S = cs_S, C = cs_C, A = cs_A, E = cs_E)
+  resolved <- !is.null(connection)
 
-    currentIds <- getIds(cs)
-    overlap <- intersect(currentIds, idsToRemove)
+  if (!resolved && warnUnresolved) {
+    warning(
+      "resolveConceptSetOverlaps() is comparing expression items, not resolved code lists. ",
+      "Concepts reached through includeDescendants will not be detected as overlaps. ",
+      "Supply connection and vocabularyDatabaseSchema to resolve precedence against the vocabulary.",
+      call. = FALSE
+    )
+  }
 
-    if (length(overlap) == 0L) return(cs)
+  # Resolve every item of every bucket in one round trip. Without a connection,
+  # a set's codes are just the concept IDs of its included items and each item
+  # contributes only itself.
+  if (resolved) {
+    resolvedCodes <- .resolveConceptSetCodesAll(
+      sets = conceptSets,
+      connection = connection,
+      vocabularyDatabaseSchema = vocabularyDatabaseSchema
+    )
+    setCodes <- resolvedCodes$setCodes
+    itemCodes <- resolvedCodes$itemCodes
+  } else {
+    setCodes <- lapply(conceptSets, function(cs) {
+      if (is.null(cs)) return(integer(0))
+      included <- Filter(function(x) !isTRUE(x@isExcluded), cs@Expression)
+      sort(unique(vapply(included, function(x) as.integer(x@Concept@concept_id), integer(1))))
+    })
+    itemCodes <- list()
+    for (setName in names(conceptSets)) {
+      if (is.null(conceptSets[[setName]])) next
+      items <- conceptSets[[setName]]@Expression
+      for (position in seq_along(items)) {
+        itemCodes[[paste0(setName, ":", position)]] <- as.integer(items[[position]]@Concept@concept_id)
+      }
+    }
+  }
 
+  # Drop the items of bucket `bucket` that a higher-priority set fully covers.
+  # An item is removed only when every code it contributes is also provided by
+  # the higher-priority set, so precedence never deletes codes that set lacks.
+  removeCoveredItems <- function(cs, bucket, priorityCodes, label) {
+    if (is.null(cs) || length(priorityCodes) == 0L) return(cs)
+
+    items <- cs@Expression
+    covered <- vapply(seq_along(items), function(i) {
+      # Excluded items contribute no codes, so precedence never removes them.
+      if (isTRUE(items[[i]]@isExcluded)) return(FALSE)
+      codes <- itemCodes[[paste0(bucket, ":", i)]]
+      length(codes) > 0L && all(codes %in% priorityCodes)
+    }, logical(1))
+
+    if (!any(covered)) return(cs)
+
+    removed <- vapply(items[covered], function(x) as.integer(x@Concept@concept_id), integer(1))
     if (warnOnOverlap) {
-      message(
-        sprintf("resolveConceptSetOverlaps: removed %d concept(s) from %s due to precedence: [%s]",
-                length(overlap), label, paste(overlap, collapse = ", "))
-      )
+      message(sprintf(
+        "resolveConceptSetOverlaps: removed %d concept(s) from %s due to precedence: [%s]%s",
+        length(removed), label, paste(removed, collapse = ", "),
+        if (resolved) " (resolved code lists)" else " (expression items only)"
+      ))
     }
 
-    keepIdx <- which(!currentIds %in% idsToRemove)
-
+    keepIdx <- which(!covered)
     if (length(keepIdx) == 0L) {
-      if (warnOnOverlap) {
-        message(sprintf("  -> %s is now empty (set to NULL)", label))
-      }
+      if (warnOnOverlap) message(sprintf("  -> %s is now empty (set to NULL)", label))
       return(NULL)
     }
-
-    cs@Expression <- unname(cs@Expression[keepIdx])
+    cs@Expression <- unname(items[keepIdx])
     cs
   }
 
-  ids_I <- getIds(cs_I)
-
   # Rule 1: I wins over everything
-  cs_A <- removeIds(cs_A, ids_I, "cs_A (alternative diagnoses)")
-  cs_H <- removeIds(cs_H, ids_I, "cs_H (hypernym)")
-  cs_E <- removeIds(cs_E, ids_I, "cs_E (etiology)")
-  cs_S <- removeIds(cs_S, ids_I, "cs_S (symptoms)")
-  cs_C <- removeIds(cs_C, ids_I, "cs_C (complications)")
+  cs_A <- removeCoveredItems(cs_A, "A", setCodes$I, "cs_A (alternative diagnoses)")
+  cs_H <- removeCoveredItems(cs_H, "H", setCodes$I, "cs_H (hypernym)")
+  cs_E <- removeCoveredItems(cs_E, "E", setCodes$I, "cs_E (etiology)")
+  cs_S <- removeCoveredItems(cs_S, "S", setCodes$I, "cs_S (symptoms)")
+  cs_C <- removeCoveredItems(cs_C, "C", setCodes$I, "cs_C (complications)")
 
   # Rule 2: A wins over H, E, S, C
-  ids_A <- getIds(cs_A)
-  cs_H <- removeIds(cs_H, ids_A, "cs_H (hypernym, A-precedence)")
-  cs_E <- removeIds(cs_E, ids_A, "cs_E (etiology, A-precedence)")
-  cs_S <- removeIds(cs_S, ids_A, "cs_S (symptoms, A-precedence)")
-  cs_C <- removeIds(cs_C, ids_A, "cs_C (complications, A-precedence)")
+  cs_H <- removeCoveredItems(cs_H, "H", setCodes$A, "cs_H (hypernym, A-precedence)")
+  cs_E <- removeCoveredItems(cs_E, "E", setCodes$A, "cs_E (etiology, A-precedence)")
+  cs_S <- removeCoveredItems(cs_S, "S", setCodes$A, "cs_S (symptoms, A-precedence)")
+  cs_C <- removeCoveredItems(cs_C, "C", setCodes$A, "cs_C (complications, A-precedence)")
 
   # Rule 3: H wins over E, S, C
-  ids_H <- getIds(cs_H)
-  cs_E <- removeIds(cs_E, ids_H, "cs_E (etiology, H-precedence)")
-  cs_S <- removeIds(cs_S, ids_H, "cs_S (symptoms, H-precedence)")
-  cs_C <- removeIds(cs_C, ids_H, "cs_C (complications, H-precedence)")
+  cs_E <- removeCoveredItems(cs_E, "E", setCodes$H, "cs_E (etiology, H-precedence)")
+  cs_S <- removeCoveredItems(cs_S, "S", setCodes$H, "cs_S (symptoms, H-precedence)")
+  cs_C <- removeCoveredItems(cs_C, "C", setCodes$H, "cs_C (complications, H-precedence)")
 
   # Rule 4: E wins over S, C
-  ids_E <- getIds(cs_E)
-  cs_S <- removeIds(cs_S, ids_E, "cs_S (symptoms, E-precedence)")
-  cs_C <- removeIds(cs_C, ids_E, "cs_C (complications, E-precedence)")
+  cs_S <- removeCoveredItems(cs_S, "S", setCodes$E, "cs_S (symptoms, E-precedence)")
+  cs_C <- removeCoveredItems(cs_C, "C", setCodes$E, "cs_C (complications, E-precedence)")
 
-  # Rule 5: S and C are allowed to overlap — no action needed
+  # Rule 5: S and C are allowed to overlap - no action needed
 
   list(
     cs_I = cs_I,
@@ -499,7 +582,6 @@ resolveConceptSetOverlaps <- function(cs_I,
     cs_E = cs_E
   )
 }
-
 # Phenotype-level config resolvers ----------------------------------------------
 
 #' Treat NULL and scalar NA as "value not provided"
@@ -1113,6 +1195,13 @@ buildSparseTemplateSuffix <- function(level, useH, hosp, excl) {
 #' @param conceptSets A named list of Capr ConceptSets, named by bucket code
 #'   (`I`, `H`, `S`, `D`, `T`, `C`, `A`, `E`) or by category (see
 #'   [conceptCategoryMap()]). `I` is required; omitted buckets are not used.
+#' @param connection Optional open DatabaseConnector connection to a database
+#'   with the OMOP vocabulary tables. When supplied, concept set precedence is
+#'   applied to resolved code lists, so `includeDescendants` overlaps between
+#'   buckets are detected. When NULL, precedence falls back to comparing
+#'   expression items only and a warning is emitted.
+#' @param vocabularyDatabaseSchema Schema holding the vocabulary tables.
+#'   Required when `connection` is supplied.
 #' @return A cohort definition set data frame with cohort identifiers, names,
 #'   descriptions, axis metadata (`evidenceLevel`, `evidenceComponents`,
 #'   `hypernymIndex`, `hospitalEntry`, `altDxExcluded`), and json/sql
@@ -1130,7 +1219,9 @@ buildPhenotypeTemplates <- function(cs_I = NULL,
                                     phenotypeLabel,
                                     config,
                                     startCohortId = 0,
-                                    conceptSets = NULL) {
+                                    conceptSets = NULL,
+                                    connection = NULL,
+                                    vocabularyDatabaseSchema = NULL) {
   if (missing(phenotypeLabel) || !nzchar(phenotypeLabel)) {
     stop("phenotypeLabel is required", call. = FALSE)
   }
@@ -1152,7 +1243,13 @@ buildPhenotypeTemplates <- function(cs_I = NULL,
   config <- validatePhenotypeConfig(.asPhenotypeConfig(config))
 
   # ---- resolve concept set overlaps ----
-  resolved <- resolveConceptSetOverlaps(cs_I, cs_H, cs_S, cs_D, cs_T, cs_C, cs_A, cs_E)
+  if (is.null(connection)) .warnUnresolvedPrecedence()
+  resolved <- resolveConceptSetOverlaps(
+    cs_I, cs_H, cs_S, cs_D, cs_T, cs_C, cs_A, cs_E,
+    connection = connection,
+    vocabularyDatabaseSchema = vocabularyDatabaseSchema,
+    warnUnresolved = FALSE
+  )
   cs_H <- resolved$cs_H
   cs_S <- resolved$cs_S
   cs_D <- resolved$cs_D

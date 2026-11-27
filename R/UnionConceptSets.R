@@ -94,6 +94,83 @@
   split(as.integer(res$conceptId), as.character(res$rowId))
 }
 
+# Resolve the codes of every item across several Capr concept sets.
+#
+# Takes one or more ConceptSet objects and returns a list with:
+#   * `setCodes`: named list, one sorted code list per concept set (the union
+#     of its included items; excluded items contribute nothing);
+#   * `itemCodes`: named list keyed "setName:position", the codes contributed
+#     by that single expression item (empty for excluded items).
+#
+# Every item across every set is resolved in one database round trip via
+# .resolveItemsBatch(), which expands includeDescendants through
+# CONCEPT_ANCESTOR and includeMapped through 'Maps to'. This lets callers
+# compare what the cohorts will actually match instead of the expression
+# items, without one query per item.
+.resolveConceptSetCodesAll <- function(sets, connection, vocabularyDatabaseSchema) {
+  sets <- Filter(Negate(is.null), sets)
+  empty <- list(setCodes = list(), itemCodes = list())
+  if (length(sets) == 0L) return(empty)
+
+  rows <- list()
+  for (setName in names(sets)) {
+    items <- sets[[setName]]@Expression
+    for (position in seq_along(items)) {
+      item <- items[[position]]
+      rows[[length(rows) + 1L]] <- data.frame(
+        key = paste0(setName, ":", position),
+        setName = setName,
+        rowId = length(rows) + 1L,
+        conceptId = as.integer(item@Concept@concept_id),
+        includeDescendants = isTRUE(item@includeDescendants),
+        includeMapped = isTRUE(item@includeMapped),
+        excluded = isTRUE(item@isExcluded),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+
+  if (length(rows) == 0L) {
+    return(list(
+      setCodes = stats::setNames(lapply(sets, function(x) integer(0)), names(sets)),
+      itemCodes = list()
+    ))
+  }
+
+  items <- do.call(rbind, rows)
+  included <- items[!items$excluded, , drop = FALSE]
+
+  resolved <- if (nrow(included) > 0L) {
+    .resolveItemsBatch(
+      connection = connection,
+      df = included[, c("rowId", "conceptId", "includeDescendants", "includeMapped")],
+      vocabularyDatabaseSchema = vocabularyDatabaseSchema
+    )
+  } else {
+    list()
+  }
+
+  rowKey <- stats::setNames(items$key, as.character(items$rowId))
+  rowSet <- stats::setNames(items$setName, as.character(items$rowId))
+
+  itemCodes <- stats::setNames(vector("list", nrow(items)), items$key)
+  allCodes <- integer(0)
+  allSets <- character(0)
+  for (rowId in names(resolved)) {
+    codes <- as.integer(resolved[[rowId]])
+    itemCodes[[rowKey[[rowId]]]] <- sort(unique(codes))
+    allCodes <- c(allCodes, codes)
+    allSets <- c(allSets, rep(rowSet[[rowId]], length(codes)))
+  }
+
+  setCodes <- stats::setNames(lapply(names(sets), function(setName) {
+    if (length(allCodes) == 0L) return(integer(0))
+    sort(unique(allCodes[allSets == setName]))
+  }), names(sets))
+
+  list(setCodes = setCodes, itemCodes = itemCodes)
+}
+
 .resolveItems <- function(connection, df, vocabularyDatabaseSchema) {
   if (nrow(df) == 0) return(integer(0))
   sort(unique(unlist(.resolveItemsBatch(connection, df, vocabularyDatabaseSchema))))
