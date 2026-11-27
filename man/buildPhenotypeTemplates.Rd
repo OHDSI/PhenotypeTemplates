@@ -16,7 +16,9 @@ buildPhenotypeTemplates(
   phenotypeLabel,
   config,
   startCohortId = 0,
-  conceptSets = NULL
+  conceptSets = NULL,
+  connection = NULL,
+  vocabularyDatabaseSchema = NULL
 )
 }
 \arguments{
@@ -36,6 +38,15 @@ config.}
 \item{conceptSets}{A named list of Capr ConceptSets, named by bucket code
 (\code{I}, \code{H}, \code{S}, \code{D}, \code{T}, \code{C}, \code{A}, \code{E}) or by category (see
 \code{\link[=conceptCategoryMap]{conceptCategoryMap()}}). \code{I} is required; omitted buckets are not used.}
+
+\item{connection}{Optional open DatabaseConnector connection to a database
+with the OMOP vocabulary tables. When supplied, concept set precedence is
+applied to resolved code lists, so \code{includeDescendants} overlaps between
+buckets are detected. When NULL, precedence falls back to comparing
+expression items only and a warning is emitted.}
+
+\item{vocabularyDatabaseSchema}{Schema holding the vocabulary tables.
+Required when \code{connection} is supplied.}
 }
 \value{
 A cohort definition set data frame with cohort identifiers, names,
